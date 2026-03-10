@@ -49,7 +49,7 @@ echo "============================================================"
 echo ""
 
 REPO_URL="${REPO_URL:-https://github.com/itsMattShull/openbrain-do.git}"
-APP_DIR="${APP_DIR:-/opt/openbrain}"
+APP_DIR="${APP_DIR:-/var/www/openbrain}"
 DB_NAME="${DB_NAME:-openbrain}"
 DB_USER="${DB_USER:-openbrain}"
 
