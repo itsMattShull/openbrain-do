@@ -1,0 +1,35 @@
+# nginx site configuration template for OpenBrain
+# Variables replaced by setup.sh:
+#   {{SERVER_NAME}}  — domain or IP (e.g. brain.example.com or 1.2.3.4)
+#   {{APP_PORT}}     — Express port (e.g. 3000)
+#
+# After certbot runs, it will update this file to add SSL.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{SERVER_NAME}};
+
+    # Allow large Discord payloads
+    client_max_body_size 1m;
+
+    location / {
+        proxy_pass         http://127.0.0.1:{{APP_PORT}};
+        proxy_http_version 1.1;
+
+        # Required for MCP SSE (Server-Sent Events) streaming
+        proxy_set_header   Connection '';
+        proxy_buffering    off;
+        proxy_cache        off;
+        chunked_transfer_encoding on;
+
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+
+        # Generous timeouts for long-running MCP SSE connections
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+}
