@@ -28,17 +28,36 @@ die()     { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 # ── Must run as root ───────────────────────────────────────────────────────────
 [[ $EUID -eq 0 ]] || die "Run this script as root (e.g. sudo bash setup.sh)"
 
+# Use the terminal for prompts when this script is piped to bash.
+PROMPT_TTY=""
+[[ -r /dev/tty ]] && PROMPT_TTY="/dev/tty"
+
 # ── Configuration — override via env or answer prompts ────────────────────────
+prompt_read() {
+  local varname="$1" prompt="$2" default="$3" secret="${4:-}" val=""
+  if [[ -z "$PROMPT_TTY" ]]; then
+    if [[ -n "$default" ]]; then
+      val="$default"
+      warn "No interactive terminal detected; using default for ${varname}."
+    else
+      die "${varname} is required when running non-interactively. Export ${varname} before running setup.sh."
+    fi
+  else
+    if [[ -n "$secret" ]]; then
+      read -rsp "$prompt [${default}]: " val < "$PROMPT_TTY"
+      echo
+    else
+      read -rp "$prompt [${default}]: " val < "$PROMPT_TTY"
+    fi
+    val="${val:-$default}"
+  fi
+  printf -v "$varname" '%s' "$val"
+}
+
 prompt_if_empty() {
   local varname="$1" prompt="$2" default="$3" secret="${4:-}"
   if [[ -z "${!varname:-}" ]]; then
-    if [[ -n "$secret" ]]; then
-      read -rsp "$prompt [${default}]: " val
-      echo
-    else
-      read -rp "$prompt [${default}]: " val
-    fi
-    eval "$varname=\"${val:-$default}\""
+    prompt_read "$varname" "$prompt" "$default" "$secret"
   fi
 }
 
@@ -67,8 +86,8 @@ prompt_if_empty MCP_ACCESS_KEY       "MCP access key (leave blank to auto-genera
 SETUP_SSL="no"
 # Only offer SSL if DOMAIN looks like a hostname (not an IP)
 if [[ "$DOMAIN" =~ ^[a-zA-Z] ]]; then
-  read -rp "Set up SSL with Let's Encrypt? (y/n) [y]: " ssl_choice
-  [[ "${ssl_choice:-y}" == "y" ]] && SETUP_SSL="yes"
+  prompt_read ssl_choice "Set up SSL with Let's Encrypt? (y/n)" "y"
+  [[ "$ssl_choice" == "y" ]] && SETUP_SSL="yes"
 fi
 
 echo ""
@@ -80,8 +99,8 @@ echo "  Port:     $PORT"
 echo "  DB name:  $DB_NAME  (user: $DB_USER)"
 echo "  SSL:      $SETUP_SSL"
 echo ""
-read -rp "Proceed? (y/n) [y]: " confirm
-[[ "${confirm:-y}" == "y" ]] || { info "Aborted."; exit 0; }
+prompt_read confirm "Proceed? (y/n)" "y"
+[[ "$confirm" == "y" ]] || { info "Aborted."; exit 0; }
 
 # ── System packages ────────────────────────────────────────────────────────────
 info "Updating package lists..."
