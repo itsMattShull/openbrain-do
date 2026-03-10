@@ -153,6 +153,11 @@ sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'"
 
 success "PostgreSQL database '${DB_NAME}' ready"
 
+# ── PostgreSQL extensions (must be created by superuser) ───────────────────────
+info "Enabling PostgreSQL extensions..."
+sudo -u postgres psql -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "CREATE EXTENSION IF NOT EXISTS vector;"
+success "Extension 'vector' enabled in '${DB_NAME}'"
+
 # ── Clone / update the application ────────────────────────────────────────────
 if [[ -d "$APP_DIR/.git" ]]; then
   info "Updating existing install at ${APP_DIR}..."
@@ -182,7 +187,8 @@ success ".env written to ${APP_DIR}/.env"
 
 # ── Run database schema ────────────────────────────────────────────────────────
 info "Applying database schema..."
-PGPASSWORD="$DB_PASS" psql -U "$DB_USER" -d "$DB_NAME" -f "${APP_DIR}/sql/schema.sql"
+# Force TCP so PostgreSQL uses password auth instead of local peer auth.
+PGPASSWORD="$DB_PASS" psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -f "${APP_DIR}/sql/schema.sql"
 success "Schema applied"
 
 # ── PM2 log directory ──────────────────────────────────────────────────────────
@@ -221,7 +227,8 @@ pm2 start ecosystem.config.js
 pm2 save
 
 # Enable PM2 to start on boot
-env PATH="$PATH:/usr/bin" pm2 startup systemd -u root --hp /root | tail -1 | bash || true
+env PATH="$PATH:/usr/bin" pm2 startup systemd -u root --hp /root || true
+pm2 save
 success "OpenBrain is running"
 
 # ── Done ───────────────────────────────────────────────────────────────────────
