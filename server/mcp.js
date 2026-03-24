@@ -64,7 +64,7 @@ function createMcpServer() {
     {
       title: 'Search Thoughts',
       description:
-        'Search captured thoughts by meaning. Use this when the user asks about a topic, person, or idea they have previously captured.',
+        'Search raw captured thoughts (Tier 1) by meaning. Use this when you need original unprocessed captures — specific meeting details, exact timestamps, task lists, unfiltered feedback, or the source material for a consolidation/dream pass. Do NOT use this as the default lookup tool. For general questions about a person, project, topic, or situation, use search_memory instead, which searches across all tiers and surfaces synthesized knowledge first.',
       inputSchema: {
         query: z.string().describe('What to search for'),
         limit: z.number().optional().default(10),
@@ -112,7 +112,7 @@ function createMcpServer() {
     {
       title: 'List Recent Thoughts',
       description:
-        'List recently captured thoughts with optional filters by type, topic, person, or time range.',
+        'List raw captured thoughts (Tier 1) in reverse chronological order with optional filters by type, topic, person, or time range. Use this when you need a time-ordered log of what was captured — for review, auditing, or feeding into a consolidation/dream pass. For semantic lookup by meaning, use search_memory or search_thoughts instead.',
       inputSchema: {
         limit: z.number().optional().default(10),
         type: z.string().optional().describe('Filter by type: observation, task, idea, reference, person_note'),
@@ -172,7 +172,7 @@ function createMcpServer() {
     'thought_stats',
     {
       title: 'Thought Statistics',
-      description: 'Get a summary of all captured thoughts: totals, types, top topics, and people.',
+      description: 'Get a summary of raw captured thoughts (Tier 1): totals by type, top topics, and people mentioned. For a combined stats summary across all memory tiers including synthesized memory objects, use memory_stats instead.',
       inputSchema: {},
     },
     async () => {
@@ -229,7 +229,7 @@ function createMcpServer() {
     {
       title: 'Capture Memory Object',
       description:
-        'Save a synthesized memory object (Tier 2). Use this to distill and preserve insights, person profiles, or durable principles derived from raw thoughts. Not for raw captures — use capture_thought for those.',
+        "Save a synthesized memory object to the Open Brain (Tier 2). Use this when consolidating raw thoughts into durable, distilled knowledge — not for capturing something new in the moment. Three types: (1) 'synthesis' — distilled understanding of a topic, project, or situation as of a date, e.g. the current state of a competitive situation or a product initiative; (2) 'profile' — synthesized understanding of a person: who they are, their role, relationship to the user, and what to watch for; (3) 'principle' — a durable mental model, hard-won lesson, or way of working that doesn't expire. Always set domain to 'work', 'personal', or 'general'. Include source_thought_ids when the object was derived from specific raw thoughts. Include supersedes_ids when this object replaces an older memory object on the same topic.",
       inputSchema: {
         object_type: z.enum(['synthesis', 'profile', 'principle']).describe(
           "'synthesis' for distilled topic knowledge, 'profile' for a person, 'principle' for a durable truth or mental model"
@@ -296,7 +296,7 @@ function createMcpServer() {
     {
       title: 'Search Memory',
       description:
-        'Unified semantic search across both raw thoughts (Tier 1) and synthesized memory objects (Tier 2). Memory objects are boosted in ranking so distilled knowledge surfaces above raw captures when both are relevant. Use this as the primary search tool.',
+        "Primary search tool across all memory tiers. Use this by default whenever looking up anything about a person, project, topic, competitive situation, or past decision. Searches both raw thoughts (Tier 1) and synthesized memory objects (Tier 2) together, with synthesized knowledge ranked first. Supports filtering by tier ('all', 'thoughts', 'objects'), object_type ('synthesis', 'profile', 'principle'), and domain ('work', 'personal', 'general'). Use tier='objects' when you specifically want synthesized knowledge only — e.g. 'what do I know about this person' or 'what is the current state of this project'. Use tier='thoughts' when you need raw unprocessed captures specifically.",
       inputSchema: {
         query: z.string().describe('Natural language search query'),
         limit: z.number().optional().default(10).describe('Total results to return'),
@@ -410,7 +410,7 @@ function createMcpServer() {
     {
       title: 'List Memory Objects',
       description:
-        'List synthesized memory objects (Tier 2) with optional filters. Use this to browse syntheses, profiles, and principles.',
+        'List synthesized memory objects (Tier 2) with optional filters by type, domain, or recency. Use this when you want to browse what has been consolidated — e.g. all profiles of people, all active synthesis objects for a domain, or recently updated principles. For semantic search by meaning across all tiers, use search_memory instead.',
       inputSchema: {
         object_type: z.enum(['synthesis', 'profile', 'principle']).optional().describe('Filter by type'),
         domain: z.enum(['work', 'personal', 'general']).optional().describe('Filter by domain'),
@@ -474,7 +474,7 @@ function createMcpServer() {
     'memory_stats',
     {
       title: 'Memory Statistics',
-      description: 'Get a combined stats summary across all tiers: thought counts/types (Tier 1) and memory object counts/types/domains (Tier 2).',
+      description: 'Get a combined stats summary across all memory tiers: raw thought totals by type (Tier 1) plus memory object totals by type and domain (Tier 2), with the most recent object per type. Use this instead of thought_stats when you want a full picture of the knowledge base, not just raw captures.',
       inputSchema: {},
     },
     async () => {
@@ -565,7 +565,7 @@ function createMcpServer() {
     {
       title: 'Capture Thought',
       description:
-        'Save a new thought to the Open Brain. Generates an embedding and extracts metadata automatically. Use this when the user wants to save something to their brain directly from any AI client.',
+        'Save a new raw thought to the Open Brain (Tier 1). Generates an embedding and extracts metadata automatically. Use this to capture a new observation, task, idea, reference, or person note in the moment. This is the intake layer — unprocessed, append-only. For saving synthesized knowledge, profiles of people, or durable principles, use capture_memory_object instead.',
       inputSchema: {
         content: z.string().describe('The thought to capture — a clear, standalone statement that will make sense when retrieved later by any AI'),
       },
