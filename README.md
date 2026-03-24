@@ -146,6 +146,81 @@ systemctl enable pm2-root
 systemctl restart pm2-root
 ```
 
+## Tiered Memory Architecture
+
+OpenBrain organizes knowledge into two tiers backed by separate PostgreSQL tables.
+
+### Tier 1 — Thoughts (raw captures, append-only)
+
+The `thoughts` table stores every raw capture exactly as received. Nothing is ever deleted or modified. Each row has a `content` text field, a `VECTOR(1536)` embedding for semantic search, and a `metadata` JSONB blob with extracted `type`, `topics`, `people`, and `action_items`.
+
+MCP tools for Tier 1: `capture_thought`, `search_thoughts`, `list_thoughts`, `thought_stats`
+
+### Tier 2 — Memory Objects (synthesized knowledge)
+
+The `memory_objects` table stores distilled, synthesized knowledge derived from raw thoughts. Three object types are supported:
+
+| `object_type` | Purpose |
+|---|---|
+| `synthesis` | Distilled understanding of a topic, project, or situation as of a date. Example: "Minneapolis competitive situation as of March 2026." |
+| `profile` | Synthesized understanding of a person — role, relationship, what to watch for. |
+| `principle` | A durable truth, mental model, or hard-won lesson that doesn't expire. |
+
+Each memory object has a `domain` (`work`, `personal`, or `general`), a `title`, `content`, optional `source_thought_ids` (UUIDs of thoughts it was derived from), optional `supersedes_ids` (UUIDs of older objects it replaces), and a `valid_as_of` timestamp.
+
+### New MCP Tools (Tier 2)
+
+**`capture_memory_object`** — Save a new synthesized memory object.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `object_type` | `synthesis` \| `profile` \| `principle` | ✓ | Type of object |
+| `domain` | `work` \| `personal` \| `general` | ✓ | Domain |
+| `title` | string | ✓ | Short descriptive title |
+| `content` | string | ✓ | Full synthesized content, written as a standalone briefing |
+| `source_thought_ids` | string[] | — | UUIDs of source thoughts |
+| `supersedes_ids` | string[] | — | UUIDs of older memory objects this replaces |
+| `valid_as_of` | ISO date string | — | Knowledge currency date, defaults to now |
+
+Returns the saved object ID and confirmation.
+
+**`search_memory`** — Unified semantic search across both tiers.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `query` | string | — | Natural language query |
+| `limit` | number | 10 | Total results to return |
+| `tier` | `all` \| `thoughts` \| `objects` | `all` | Restrict to one tier |
+| `object_type` | `synthesis` \| `profile` \| `principle` | — | Filter memory objects by type |
+| `domain` | `work` \| `personal` \| `general` | — | Filter by domain |
+| `threshold` | number | 0.5 | Cosine similarity threshold |
+
+When `tier` is `all`, memory objects receive a **+0.05 similarity boost** before sorting. This ensures synthesized, distilled knowledge surfaces above raw captures when both are relevant to a query. Each result includes a `tier` label (`THOUGHT` or `MEMORY: <type>`) so callers know what they retrieved.
+
+**`list_memory_objects`** — Browse memory objects with optional filters.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `object_type` | optional | Filter by type |
+| `domain` | optional | Filter by domain |
+| `limit` | number (default 10) | Max results |
+| `days` | number | Only objects updated within last N days |
+
+Returns sorted by `updated_at` descending.
+
+**`memory_stats`** — Combined stats summary across both tiers.
+
+Returns: total thoughts by type (Tier 1), total memory objects by `object_type` and `domain` (Tier 2), most recent memory object per type, and date ranges for both tiers.
+
+### Applying the Migration to an Existing Database
+
+If you already have the `thoughts` table deployed and want to add `memory_objects` without re-running the full schema:
+
+```bash
+DB_URL=$(grep '^DATABASE_URL=' /var/www/openbrain/.env | cut -d= -f2-)
+psql "$DB_URL" -v ON_ERROR_STOP=1 -f /var/www/openbrain/sql/migrations/001_memory_objects.sql
+```
+
 ## Security Notes
 
 - Use HTTPS in production.
