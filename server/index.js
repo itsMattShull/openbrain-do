@@ -4,30 +4,45 @@ require('dotenv').config();
 
 const express = require('express');
 const { handleIngest } = require('./ingest');
-const { checkAuth, handleMcp } = require('./mcp');
+const { checkAuth, createHandleMcp } = require('./mcp');
+const { loadExtensions } = require('./loader');
 
 const PORT = process.env.PORT || 3000;
-const app = express();
 
-// Health check
-app.get('/health', (_req, res) => res.json({ ok: true }));
+async function start() {
+  const extensionTools = await loadExtensions();
+  const handleMcp = createHandleMcp(extensionTools);
 
-// Discord ingest — must receive the raw body string for Ed25519 signature verification
-app.post('/ingest', express.text({ type: 'application/json' }), handleIngest);
+  const app = express();
 
-// MCP server — POST (RPC calls) and GET (SSE event stream)
-app.post('/mcp', checkAuth, express.json(), handleMcp);
-app.get('/mcp', checkAuth, handleMcp);
+  // Health check
+  app.get('/health', (_req, res) => res.json({ ok: true }));
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down');
-  process.exit(0);
-});
+  // Discord ingest — must receive the raw body string for Ed25519 signature verification
+  app.post('/ingest', express.text({ type: 'application/json' }), handleIngest);
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`OpenBrain listening on port ${PORT}`);
-  console.log(`  POST /ingest  — Discord webhook`);
-  console.log(`  POST /mcp     — MCP RPC`);
-  console.log(`  GET  /mcp     — MCP SSE stream`);
+  // MCP server — POST (RPC calls) and GET (SSE event stream)
+  app.post('/mcp', checkAuth, express.json(), handleMcp);
+  app.get('/mcp', checkAuth, handleMcp);
+
+  // Graceful shutdown
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down');
+    process.exit(0);
+  });
+
+  app.listen(PORT, '127.0.0.1', () => {
+    console.log(`OpenBrain listening on port ${PORT}`);
+    console.log(`  POST /ingest  — Discord webhook`);
+    console.log(`  POST /mcp     — MCP RPC`);
+    console.log(`  GET  /mcp     — MCP SSE stream`);
+    if (extensionTools.length > 0) {
+      console.log(`  Extension tools loaded: ${extensionTools.map((t) => t.name).join(', ')}`);
+    }
+  });
+}
+
+start().catch((err) => {
+  console.error('Startup failed:', err);
+  process.exit(1);
 });

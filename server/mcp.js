@@ -5,57 +5,13 @@ const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/ser
 const { z } = require('zod');
 const { pool, formatVector } = require('./db');
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const MCP_ACCESS_KEY = process.env.MCP_ACCESS_KEY;
-const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
-
-async function getEmbedding(text) {
-  const r = await fetch(`${OPENROUTER_BASE}/embeddings`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'openai/text-embedding-3-small', input: text }),
-  });
-  if (!r.ok) {
-    const msg = await r.text().catch(() => '');
-    throw new Error(`OpenRouter embeddings failed: ${r.status} ${msg}`);
-  }
-  const d = await r.json();
-  return d.data[0].embedding;
-}
-
-async function extractMetadata(text) {
-  const r = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'openai/gpt-4o-mini',
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: `Extract metadata from the user's captured thought. Return JSON with:
-- "people": array of people mentioned (empty if none)
-- "action_items": array of implied to-dos (empty if none)
-- "dates_mentioned": array of dates YYYY-MM-DD (empty if none)
-- "topics": array of 1-3 short topic tags (always at least one)
-- "type": one of "observation", "task", "idea", "reference", "person_note"
-Only extract what's explicitly there.`,
-        },
-        { role: 'user', content: text },
-      ],
-    }),
-  });
-  const d = await r.json();
-  try {
-    return JSON.parse(d.choices[0].message.content);
-  } catch {
-    return { topics: ['uncategorized'], type: 'observation' };
-  }
-}
+const { getEmbedding, extractMetadata } = require('./utils');
 
 // Creates a fresh McpServer with all tools registered.
 // Called per-request so there are no shared-state issues with concurrent connections.
-function createMcpServer() {
+// extensionTools: array of { name, config, handler } from loader.js
+function createMcpServer(extensionTools = []) {
   const server = new McpServer({ name: 'open-brain', version: '1.0.0' });
 
   // Tool 1: Semantic search
@@ -595,6 +551,11 @@ function createMcpServer() {
     }
   );
 
+  // Extension tools — registered after built-ins
+  for (const tool of extensionTools) {
+    server.registerTool(tool.name, tool.config, tool.handler);
+  }
+
   return server;
 }
 
@@ -607,13 +568,16 @@ function checkAuth(req, res, next) {
   next();
 }
 
-// Express route handler for all MCP requests (POST for RPC, GET for SSE)
-async function handleMcp(req, res) {
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  res.on('close', () => transport.close());
-  const server = createMcpServer();
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+// Factory — call once at startup with the loaded extension tools.
+// Returns an Express route handler that creates a fresh McpServer per request.
+function createHandleMcp(extensionTools) {
+  return async function handleMcp(req, res) {
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    res.on('close', () => transport.close());
+    const server = createMcpServer(extensionTools);
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  };
 }
 
-module.exports = { checkAuth, handleMcp };
+module.exports = { checkAuth, createHandleMcp };
