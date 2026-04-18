@@ -191,6 +191,19 @@ info "Applying database schema..."
 PGPASSWORD="$DB_PASS" psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -f "${APP_DIR}/sql/schema.sql"
 success "Schema applied"
 
+# ── Apply migrations in order ──────────────────────────────────────────────────
+# schema.sql uses CREATE TABLE IF NOT EXISTS, so pre-existing tables never pick
+# up newly added columns. Apply every migration (all idempotent) so upgraded
+# installs stay in sync with the current schema.
+if compgen -G "${APP_DIR}/sql/migrations/*.sql" > /dev/null; then
+  info "Applying database migrations..."
+  for migration in "${APP_DIR}"/sql/migrations/*.sql; do
+    info "  → $(basename "$migration")"
+    PGPASSWORD="$DB_PASS" psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" -f "$migration"
+  done
+  success "Migrations applied"
+fi
+
 # ── PM2 log directory ──────────────────────────────────────────────────────────
 mkdir -p /var/log/openbrain
 chown -R "$(logname 2>/dev/null || echo root)":root /var/log/openbrain 2>/dev/null || true
