@@ -7,6 +7,13 @@ const { pool, formatVector } = require('./db');
 
 const MCP_ACCESS_KEY = process.env.MCP_ACCESS_KEY;
 const { getEmbedding, extractMetadata } = require('./utils');
+const {
+  deleteMemoryObject,
+  retireMemoryObject,
+  updateMemoryObject,
+  mergeMemoryObjects,
+  listMemoryObjects,
+} = require('./memoryObjects');
 
 // Creates a fresh McpServer with all tools registered.
 // Called per-request so there are no shared-state issues with concurrent connections.
@@ -25,6 +32,11 @@ function createMcpServer(extensionTools = []) {
         query: z.string().describe('What to search for'),
         limit: z.number().optional().default(10),
         threshold: z.number().optional().default(0.5),
+        include_retired: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe('Thoughts (Tier 1) are append-only and never retired, so this flag is accepted for API symmetry but has no effect on search_thoughts.'),
       },
     },
     async ({ query, limit, threshold }) => {
@@ -260,9 +272,14 @@ function createMcpServer(extensionTools = []) {
         object_type: z.enum(['synthesis', 'profile', 'principle']).optional().describe('Filter memory objects by type'),
         domain: z.enum(['work', 'personal', 'general']).optional().describe('Filter by domain'),
         threshold: z.number().optional().default(0.5).describe('Cosine similarity threshold (0–1)'),
+        include_retired: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe('Include retired memory objects in results. Defaults to false — retired objects are excluded.'),
       },
     },
-    async ({ query, limit, tier, object_type, domain, threshold }) => {
+    async ({ query, limit, tier, object_type, domain, threshold, include_retired }) => {
       try {
         const effectiveThreshold = query.split(' ').length < 4 ? Math.min(threshold, 0.3) : threshold;
         const embedding = await getEmbedding(query);
@@ -293,6 +310,9 @@ function createMcpServer(extensionTools = []) {
           const conditions = ['embedding IS NOT NULL', `1 - (embedding <=> $1::vector) > $2`];
           const params = [vec, effectiveThreshold];
 
+          if (!include_retired) {
+            conditions.push('retired_at IS NULL');
+          }
           if (object_type) {
             params.push(object_type);
             conditions.push(`object_type = $${params.length}`);
@@ -372,35 +392,22 @@ function createMcpServer(extensionTools = []) {
         domain: z.enum(['work', 'personal', 'general']).optional().describe('Filter by domain'),
         limit: z.number().optional().default(10),
         days: z.number().optional().describe('Only objects updated within the last N days'),
+        include_retired: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe('Include retired memory objects. Defaults to false.'),
       },
     },
-    async ({ object_type, domain, limit, days }) => {
+    async ({ object_type, domain, limit, days, include_retired }) => {
       try {
-        const conditions = [];
-        const params = [];
-
-        if (object_type) {
-          params.push(object_type);
-          conditions.push(`object_type = $${params.length}`);
-        }
-        if (domain) {
-          params.push(domain);
-          conditions.push(`domain = $${params.length}`);
-        }
-        if (days) {
-          const since = new Date();
-          since.setDate(since.getDate() - days);
-          params.push(since.toISOString());
-          conditions.push(`updated_at >= $${params.length}`);
-        }
-
-        params.push(limit);
-        const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-        const sql = `SELECT id, object_type, domain, title, content, metadata, valid_as_of, updated_at
-                     FROM memory_objects ${where}
-                     ORDER BY updated_at DESC
-                     LIMIT $${params.length}`;
-        const { rows } = await pool.query(sql, params);
+        const rows = await listMemoryObjects(pool, {
+          object_type,
+          domain,
+          days,
+          limit,
+          include_retired,
+        });
 
         if (!rows.length) {
           return { content: [{ type: 'text', text: 'No memory objects found.' }] };
@@ -409,11 +416,16 @@ function createMcpServer(extensionTools = []) {
         const results = rows.map((obj, i) => {
           const m = obj.metadata || {};
           const tags = Array.isArray(m.topics) ? m.topics.join(', ') : '';
+          const retiredTag = obj.retired_at ? ' [RETIRED]' : '';
           return (
-            `${i + 1}. [${obj.object_type.toUpperCase()}] [${obj.domain}] "${obj.title}"\n` +
+            `${i + 1}. [${obj.object_type.toUpperCase()}] [${obj.domain}]${retiredTag} "${obj.title}"\n` +
             `   Updated: ${new Date(obj.updated_at).toLocaleDateString()}` +
             `${tags ? ' — ' + tags : ''}\n` +
             `   ID: ${obj.id}\n` +
+            (obj.retired_at
+              ? `   Retired: ${new Date(obj.retired_at).toLocaleDateString()}` +
+                (obj.retirement_reason ? ` — ${obj.retirement_reason}` : '') + `\n`
+              : '') +
             `   ${obj.content.slice(0, 120)}${obj.content.length > 120 ? '…' : ''}`
           );
         });
@@ -545,6 +557,194 @@ function createMcpServer(extensionTools = []) {
           confirmation += ` | Actions: ${metadata.action_items.join('; ')}`;
 
         return { content: [{ type: 'text', text: confirmation }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool 9: Hard-delete a memory object (Tier 2)
+  server.registerTool(
+    'delete_memory_object',
+    {
+      title: 'Delete Memory Object',
+      description:
+        'Hard-delete a Tier 2 memory object. This is irreversible and removes the row from the database entirely. Only use on already-retired objects that you are confident will not be brought back. For normal cleanup, prefer retire_memory_object (soft-delete, recoverable, preserves lineage).',
+      inputSchema: {
+        memory_object_id: z.string().describe('UUID of the memory object to delete'),
+      },
+    },
+    async ({ memory_object_id }) => {
+      try {
+        const result = await deleteMemoryObject(pool, { id: memory_object_id });
+        return {
+          content: [
+            { type: 'text', text: `Deleted memory object ${result.id}` },
+          ],
+          structuredContent: result,
+        };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool 10: Soft-delete (retire) a memory object (Tier 2)
+  server.registerTool(
+    'retire_memory_object',
+    {
+      title: 'Retire Memory Object',
+      description:
+        'Soft-delete a Tier 2 memory object. Retired objects stay in the database (recoverable via include_retired: true) but are excluded from default search and list results. Use this for duplicates, stale snapshots, or objects that have been superseded. Optionally provide a reason so future readers understand why it was retired.',
+      inputSchema: {
+        memory_object_id: z.string().describe('UUID of the memory object to retire'),
+        reason: z
+          .string()
+          .optional()
+          .describe('Why it was retired, e.g. "duplicate of {id}", "stale Q1 2026 snapshot", "merged into {new_id}"'),
+      },
+    },
+    async ({ memory_object_id, reason }) => {
+      try {
+        const result = await retireMemoryObject(pool, { id: memory_object_id, reason });
+        const reasonLine = result.retirement_reason ? `\nReason: ${result.retirement_reason}` : '';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Retired "${result.title}" (${result.id}) at ${new Date(result.retired_at).toISOString()}${reasonLine}`,
+            },
+          ],
+          structuredContent: result,
+        };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool 11: In-place edit of a memory object (Tier 2)
+  server.registerTool(
+    'update_memory_object',
+    {
+      title: 'Update Memory Object',
+      description:
+        'Edit an existing Tier 2 memory object in place. Use this for small fixes: a typo, a title tweak, or correcting a stale fact inside an otherwise current object. Only the fields you supply are changed. Does NOT create a new superseding version and does NOT modify supersedes_ids. For a full replacement that preserves lineage, use capture_memory_object with supersedes_ids instead.',
+      inputSchema: {
+        memory_object_id: z.string().describe('UUID of the memory object to update'),
+        title: z.string().optional().describe('New title'),
+        content: z.string().optional().describe('New content. If changed, the embedding is regenerated.'),
+        domain: z.enum(['work', 'personal', 'general']).optional().describe('New domain'),
+        valid_as_of: z.string().optional().describe('ISO date string — when this knowledge is current'),
+      },
+    },
+    async ({ memory_object_id, title, content, domain, valid_as_of }) => {
+      try {
+        const fields = {};
+        if (title !== undefined) fields.title = title;
+        if (content !== undefined) fields.content = content;
+        if (domain !== undefined) fields.domain = domain;
+        if (valid_as_of !== undefined) fields.valid_as_of = valid_as_of;
+
+        if (!Object.keys(fields).length) {
+          return {
+            content: [{ type: 'text', text: 'Error: no fields provided to update' }],
+            isError: true,
+          };
+        }
+
+        // Re-embed if anything that feeds into the embedding text changed.
+        let opts = {};
+        if (title !== undefined || content !== undefined) {
+          const current = await pool.query(
+            'SELECT title, content FROM memory_objects WHERE id = $1',
+            [memory_object_id]
+          );
+          if (!current.rows.length) throw new Error(`Memory object ${memory_object_id} does not exist`);
+          const newTitle = title !== undefined ? title : current.rows[0].title;
+          const newContent = content !== undefined ? content : current.rows[0].content;
+          opts.embedding = await getEmbedding(`${newTitle} ${newContent}`);
+        }
+
+        const updated = await updateMemoryObject(pool, { id: memory_object_id, fields }, opts);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `Updated "${updated.title}" (${updated.id}) — updated_at ${new Date(updated.updated_at).toISOString()}`,
+            },
+          ],
+          structuredContent: updated,
+        };
+      } catch (err) {
+        return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+      }
+    }
+  );
+
+  // Tool 12: Atomic merge — create a new consolidated object and retire sources
+  server.registerTool(
+    'merge_memory_objects',
+    {
+      title: 'Merge Memory Objects',
+      description:
+        'Atomic merge: create a new consolidated Tier 2 memory object AND retire every source object in one transaction. Equivalent to capture_memory_object followed by retire_memory_object for each source, but atomic — if any step fails the whole operation rolls back. Use this when consolidating overlapping objects into a single source of truth.',
+      inputSchema: {
+        object_type: z.enum(['synthesis', 'profile', 'principle']).describe('Type of the new consolidated object'),
+        domain: z.enum(['work', 'personal', 'general']).describe('Domain of the new consolidated object'),
+        title: z.string().describe('Title of the new consolidated object'),
+        content: z.string().describe('Full synthesized content of the new consolidated object'),
+        source_object_ids: z
+          .array(z.string())
+          .describe('UUIDs of the memory objects being merged and retired. Become supersedes_ids on the new object.'),
+        valid_as_of: z.string().optional().describe('ISO date string for the new object'),
+        source_thought_ids: z.array(z.string()).optional().describe('UUIDs of raw thoughts this was derived from'),
+        retirement_reason: z
+          .string()
+          .optional()
+          .describe('Retirement reason applied to each source. Defaults to "merged into {new_object_id}".'),
+      },
+    },
+    async ({
+      object_type,
+      domain,
+      title,
+      content,
+      source_object_ids,
+      valid_as_of,
+      source_thought_ids,
+      retirement_reason,
+    }) => {
+      try {
+        const result = await mergeMemoryObjects(
+          pool,
+          {
+            object_type,
+            domain,
+            title,
+            content,
+            source_object_ids,
+            valid_as_of,
+            source_thought_ids,
+            retirement_reason,
+          },
+          { getEmbedding, extractMetadata }
+        );
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Merged ${result.retired_ids.length} object(s) into new ${object_type} "${title}" (${result.new_object_id})\n` +
+                `Retired: ${result.retired_ids.join(', ')}\n` +
+                `Reason: ${result.retirement_reason}`,
+            },
+          ],
+          structuredContent: {
+            new_object_id: result.new_object_id,
+            retired_ids: result.retired_ids,
+          },
+        };
       } catch (err) {
         return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
       }

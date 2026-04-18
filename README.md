@@ -212,6 +212,48 @@ Returns sorted by `updated_at` descending.
 
 Returns: total thoughts by type (Tier 1), total memory objects by `object_type` and `domain` (Tier 2), most recent memory object per type, and date ranges for both tiers.
 
+### Tier 2 Cleanup Tools
+
+Consolidate and clean up synthesized knowledge as it grows.
+
+**`retire_memory_object`** — Soft-delete a memory object. Retired objects stay in the database (recoverable) but are excluded from default search and list results.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `memory_object_id` | UUID | ✓ | Object to retire |
+| `reason` | string | — | Why it was retired, e.g. `"duplicate of {id}"`, `"stale Q1 2026 snapshot"` |
+
+**`update_memory_object`** — Edit an existing memory object in place for small fixes (typos, title tweaks, correcting a stale fact inside an otherwise-current object). Only provided fields are updated; `supersedes_ids` is not touched and no new row is created. If `title` or `content` change, the embedding is regenerated.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `memory_object_id` | UUID | ✓ | Object to update |
+| `title` | string | — | New title |
+| `content` | string | — | New content |
+| `domain` | `work` \| `personal` \| `general` | — | New domain |
+| `valid_as_of` | ISO date | — | New currency date |
+
+**`merge_memory_objects`** — Atomic merge: create a new consolidated object and retire every source in one transaction. If any step fails, the whole operation rolls back.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `object_type` | `synthesis` \| `profile` \| `principle` | ✓ | Type of the new consolidated object |
+| `domain` | `work` \| `personal` \| `general` | ✓ | Domain of the new object |
+| `title` | string | ✓ | Title of the new object |
+| `content` | string | ✓ | Full synthesized content |
+| `source_object_ids` | UUID[] | ✓ | Sources to merge and retire. Become `supersedes_ids` on the new object. |
+| `valid_as_of` | ISO date | — | Currency date for the new object |
+| `source_thought_ids` | UUID[] | — | Raw thoughts the new object was derived from |
+| `retirement_reason` | string | — | Defaults to `"merged into {new_object_id}"` |
+
+**`delete_memory_object`** — Hard-delete a memory object. Irreversible. Only use on already-retired objects that will not be brought back.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `memory_object_id` | UUID | ✓ | Object to delete |
+
+All of `search_memory`, `search_thoughts`, and `list_memory_objects` accept an optional `include_retired` boolean (default `false`). When `false`, retired memory objects are filtered out. Retired objects are still resolvable via `supersedes_ids` for lineage queries.
+
 ### Applying the Migration to an Existing Database
 
 If you already have the `thoughts` table deployed and want to add `memory_objects` without re-running the full schema:
@@ -219,7 +261,18 @@ If you already have the `thoughts` table deployed and want to add `memory_object
 ```bash
 DB_URL=$(grep '^DATABASE_URL=' /var/www/openbrain/.env | cut -d= -f2-)
 psql "$DB_URL" -v ON_ERROR_STOP=1 -f /var/www/openbrain/sql/migrations/001_memory_objects.sql
+psql "$DB_URL" -v ON_ERROR_STOP=1 -f /var/www/openbrain/sql/migrations/002_retirement.sql
 ```
+
+Migration 002 adds `retired_at` and `retirement_reason` columns to `memory_objects`. Existing rows are backfilled with `NULL` (i.e. still active).
+
+### Tests
+
+```bash
+DATABASE_URL=postgres://... npm test
+```
+
+Integration tests seed rows with a unique per-run prefix, exercise the cleanup tools, and clean up after themselves. Tests skip if `DATABASE_URL` is not set.
 
 ## Security Notes
 

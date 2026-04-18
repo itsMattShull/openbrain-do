@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS memory_objects (
   valid_as_of       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  retired_at        TIMESTAMPTZ,
+  retirement_reason TEXT,
   embedding         VECTOR(1536),
   metadata          JSONB       DEFAULT '{}'
 );
@@ -45,6 +47,10 @@ CREATE INDEX IF NOT EXISTS memory_objects_embedding_hnsw_idx
 CREATE INDEX IF NOT EXISTS memory_objects_object_type_idx ON memory_objects (object_type);
 
 CREATE INDEX IF NOT EXISTS memory_objects_domain_idx ON memory_objects (domain);
+
+CREATE INDEX IF NOT EXISTS memory_objects_active_idx
+  ON memory_objects (updated_at DESC)
+  WHERE retired_at IS NULL;
 
 -- match_thoughts: vector similarity search RPC
 -- Returns thoughts ordered by inner product similarity (highest = most similar)
